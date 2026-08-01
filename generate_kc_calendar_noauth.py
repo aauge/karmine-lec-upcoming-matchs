@@ -74,12 +74,32 @@ def parse_matches(html: str):
     # tout fonctionne correctement.
     print("=== DIAGNOSTIC ===", file=sys.stderr)
     print(f"Taille du HTML récupéré : {len(html)} caractères", file=sys.stderr)
-    print(f"Éléments avec [class*='match'] : {len(soup.select('[class*=match]'))}", file=sys.stderr)
-    print(f"Éléments avec [data-timestamp] : {len(soup.select('[data-timestamp]'))}", file=sys.stderr)
-    print(f"Éléments avec [class*='team-template'] : {len(soup.select('[class*=team-template]'))}", file=sys.stderr)
-    print(f"Éléments avec class='timer-object' : {len(soup.select('.timer-object'))}", file=sys.stderr)
-    print("--- Extrait du HTML (2000 premiers caractères) ---", file=sys.stderr)
-    print(html[:2000], file=sys.stderr)
+
+    # Liste les classes uniques contenant "match" ou "team" pour identifier
+    # les vrais noms utilisés par le template actuel de Liquipedia.
+    all_classes = set()
+    for el in soup.find_all(class_=True):
+        classes = el.get("class")
+        if isinstance(classes, list):
+            all_classes.update(classes)
+        elif classes:
+            all_classes.add(classes)
+
+    match_classes = sorted(c for c in all_classes if "match" in c.lower())
+    team_classes = sorted(c for c in all_classes if "team" in c.lower())
+    print(f"Classes contenant 'match' ({len(match_classes)}): {match_classes[:40]}", file=sys.stderr)
+    print(f"Classes contenant 'team' ({len(team_classes)}): {team_classes[:40]}", file=sys.stderr)
+
+    # Regarde la structure complète autour du premier timestamp trouvé
+    first_ts = soup.select_one("[data-timestamp]")
+    if first_ts:
+        print("--- Contexte autour du 1er [data-timestamp] (parent puis grand-parent) ---", file=sys.stderr)
+        parent = first_ts.find_parent()
+        grandparent = parent.find_parent() if parent else None
+        if grandparent:
+            print(str(grandparent)[:3000], file=sys.stderr)
+        elif parent:
+            print(str(parent)[:3000], file=sys.stderr)
     print("=== FIN DIAGNOSTIC ===", file=sys.stderr)
     # ------------------------------------------------------------------
 
