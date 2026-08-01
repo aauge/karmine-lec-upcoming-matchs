@@ -68,6 +68,21 @@ def parse_matches(html: str):
     soup = BeautifulSoup(html, "html.parser")
     matches = []
 
+    # --- Mode diagnostic --------------------------------------------
+    # Affiche des infos dans les logs pour comprendre la vraie structure
+    # de la page si le parsing ne trouve rien. À retirer une fois que
+    # tout fonctionne correctement.
+    print("=== DIAGNOSTIC ===", file=sys.stderr)
+    print(f"Taille du HTML récupéré : {len(html)} caractères", file=sys.stderr)
+    print(f"Éléments avec [class*='match'] : {len(soup.select('[class*=match]'))}", file=sys.stderr)
+    print(f"Éléments avec [data-timestamp] : {len(soup.select('[data-timestamp]'))}", file=sys.stderr)
+    print(f"Éléments avec [class*='team-template'] : {len(soup.select('[class*=team-template]'))}", file=sys.stderr)
+    print(f"Éléments avec class='timer-object' : {len(soup.select('.timer-object'))}", file=sys.stderr)
+    print("--- Extrait du HTML (2000 premiers caractères) ---", file=sys.stderr)
+    print(html[:2000], file=sys.stderr)
+    print("=== FIN DIAGNOSTIC ===", file=sys.stderr)
+    # ------------------------------------------------------------------
+
     match_blocks = soup.select("[class*='match']")
     seen = set()
 
