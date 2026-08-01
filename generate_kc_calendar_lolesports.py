@@ -27,10 +27,19 @@ from icalendar import Calendar, Event
 
 API_BASE = "https://esports-api.lolesports.com/persisted/gw"
 API_KEY = "0TvQnueqKa5mxJntVWt0w4LpLfEkrV1Ta8rQBb9Z"  # clé publique lolesports.com
-LEAGUE_ID = "98767991302996019"  # LEC
+
+# Compétitions à surveiller. KC n'apparaîtra dans MSI/Worlds que si
+# l'équipe s'est qualifiée cette année-là — sinon ces requêtes ne
+# renverront simplement aucun match KC, sans erreur.
+LEAGUE_IDS = {
+    "LEC": "98767991302996019",
+    "MSI": "98767991325878492",
+    "Worlds": "98767975604431411",
+}
+
 TEAM_KEYWORDS = ["karmine corp", "kc"]  # variantes du nom d'équipe à matcher
 OUTPUT_FILE = "kc_lec.ics"
-MAX_PAGES = 15  # limite de sécurité pour la pagination
+MAX_PAGES = 15  # limite de sécurité pour la pagination (par ligue)
 
 # Durée estimée d'un match selon son format, pour un événement calendrier
 # plus réaliste (un Bo5 dure nettement plus longtemps qu'un Bo1).
@@ -44,8 +53,8 @@ DEFAULT_DURATION_HOURS = 1.5  # si le format n'est pas précisé
 HEADERS = {"x-api-key": API_KEY}
 
 
-def fetch_schedule_page(page_token: str | None = None) -> dict:
-    params = {"hl": "fr-FR", "leagueId": LEAGUE_ID}
+def fetch_schedule_page(league_id: str, page_token: str | None = None) -> dict:
+    params = {"hl": "fr-FR", "leagueId": league_id}
     if page_token:
         params["pageToken"] = page_token
     resp = requests.get(f"{API_BASE}/getSchedule", params=params, headers=HEADERS, timeout=30)
@@ -53,16 +62,16 @@ def fetch_schedule_page(page_token: str | None = None) -> dict:
     return resp.json()
 
 
-def fetch_all_events() -> list[dict]:
+def fetch_events_for_league(league_id: str, league_label: str) -> list[dict]:
     """
-    Récupère tous les événements disponibles en paginant vers les matchs
+    Récupère tous les événements d'une ligue en paginant vers les matchs
     plus récents/futurs (pages.newer), pour couvrir toute la saison et
     pas seulement la fenêtre glissante autour d'aujourd'hui.
     """
     events = []
     seen_ids = set()
 
-    data = fetch_schedule_page()
+    data = fetch_schedule_page(league_id)
     for _ in range(MAX_PAGES):
         schedule = data["data"]["schedule"]
         for ev in schedule["events"]:
@@ -75,10 +84,18 @@ def fetch_all_events() -> list[dict]:
         newer_token = schedule.get("pages", {}).get("newer")
         if not newer_token:
             break
-        data = fetch_schedule_page(newer_token)
+        data = fetch_schedule_page(league_id, newer_token)
 
-    print(f"[diag] {len(events)} événement(s) LEC récupéré(s) au total.", file=sys.stderr)
+    print(f"[diag] {len(events)} événement(s) {league_label} récupéré(s) au total.", file=sys.stderr)
     return events
+
+
+def fetch_all_events() -> list[dict]:
+    """Récupère les événements de toutes les ligues suivies (LEC, MSI, Worlds...)."""
+    all_events = []
+    for label, league_id in LEAGUE_IDS.items():
+        all_events.extend(fetch_events_for_league(league_id, label))
+    return all_events
 
 
 def matches_kc(team_names) -> bool:
@@ -111,13 +128,14 @@ def build_calendar(events) -> Calendar:
             continue
 
         block_name = ev.get("blockName", "")
+        league_name = ev.get("league", {}).get("name", "LEC")
         strategy = ev.get("match", {}).get("strategy", {})
         bo_count = strategy.get("count") if strategy.get("type") == "bestOf" else None
         bo_label = f"Bo{bo_count}" if bo_count else ""
 
         duration_hours = BO_DURATIONS_HOURS.get(bo_count, DEFAULT_DURATION_HOURS)
 
-        title_bits = [f"{team_names[0]} vs {team_names[1]} (LEC"]
+        title_bits = [f"{team_names[0]} vs {team_names[1]} ({league_name}"]
         if block_name:
             title_bits.append(f" - {block_name}")
         if bo_label:
