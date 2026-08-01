@@ -35,9 +35,9 @@ MAX_PAGES = 15  # limite de sécurité pour la pagination
 # Durée estimée d'un match selon son format, pour un événement calendrier
 # plus réaliste (un Bo5 dure nettement plus longtemps qu'un Bo1).
 BO_DURATIONS_HOURS = {
-    1: 1.0,   # Bo1 : ~1 jeu, ~30-40 min + intro/pauses
-    3: 2.0,   # Bo3 : 2 à 3 jeux
-    5: 3.5,   # Bo5 : jusqu'à 5 jeux (souvent les playoffs/finales)
+    1: 1.0,   # Bo1
+    3: 3.0,   # Bo3
+    5: 5.0,   # Bo5
 }
 DEFAULT_DURATION_HOURS = 1.5  # si le format n'est pas précisé
 
