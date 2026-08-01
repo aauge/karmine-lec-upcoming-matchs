@@ -32,6 +32,15 @@ TEAM_KEYWORDS = ["karmine corp", "kc"]  # variantes du nom d'équipe à matcher
 OUTPUT_FILE = "kc_lec.ics"
 MAX_PAGES = 15  # limite de sécurité pour la pagination
 
+# Durée estimée d'un match selon son format, pour un événement calendrier
+# plus réaliste (un Bo5 dure nettement plus longtemps qu'un Bo1).
+BO_DURATIONS_HOURS = {
+    1: 1.0,   # Bo1 : ~1 jeu, ~30-40 min + intro/pauses
+    3: 2.0,   # Bo3 : 2 à 3 jeux
+    5: 3.5,   # Bo5 : jusqu'à 5 jeux (souvent les playoffs/finales)
+}
+DEFAULT_DURATION_HOURS = 1.5  # si le format n'est pas précisé
+
 HEADERS = {"x-api-key": API_KEY}
 
 
@@ -103,22 +112,27 @@ def build_calendar(events) -> Calendar:
 
         block_name = ev.get("blockName", "")
         strategy = ev.get("match", {}).get("strategy", {})
-        bo = f"Bo{strategy['count']}" if strategy.get("type") == "bestOf" else ""
+        bo_count = strategy.get("count") if strategy.get("type") == "bestOf" else None
+        bo_label = f"Bo{bo_count}" if bo_count else ""
+
+        duration_hours = BO_DURATIONS_HOURS.get(bo_count, DEFAULT_DURATION_HOURS)
 
         title_bits = [f"{team_names[0]} vs {team_names[1]} (LEC"]
         if block_name:
             title_bits.append(f" - {block_name}")
+        if bo_label:
+            title_bits.append(f" - {bo_label}")
         title_bits.append(")")
         title = "".join(title_bits)
 
         event = Event()
         event.add("summary", title)
         event.add("dtstart", start)
-        event.add("dtend", start + timedelta(hours=1))
+        event.add("dtend", start + timedelta(hours=duration_hours))
         match_id = ev.get("match", {}).get("id", start.isoformat())
         event.add("uid", f"{match_id}@kc-lec-calendar")
-        if bo:
-            event.add("description", bo)
+        if bo_label:
+            event.add("description", bo_label)
         cal.add_component(event)
 
     return cal
