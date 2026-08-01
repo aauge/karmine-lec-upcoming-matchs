@@ -9,12 +9,18 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: kc-calendar-update
+  cancel-in-progress: false
+
 jobs:
   update-calendar:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout du dépôt
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Installer Python
         uses: actions/setup-python@v5
@@ -25,7 +31,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Générer le calendrier
-        run: python3 generate_kc_calendar_noauth.py
+        run: python3 generate_kc_calendar_lolesports.py
 
       - name: Déplacer le fichier dans le dossier publié par GitHub Pages
         run: |
@@ -36,6 +42,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Force le passage sur une vraie branche locale "main"
+          # (le checkout précédent peut laisser le dépôt en "detached HEAD")
+          git checkout -B main
           git add docs/kc_lec.ics
-          git diff --staged --quiet || git commit -m "Mise à jour automatique du calendrier KC LEC"
-          git push
+          if git diff --staged --quiet; then
+            echo "Rien à commit."
+            exit 0
+          fi
+          git commit -m "Mise à jour automatique du calendrier KC LEC"
+          git pull --rebase origin main
+          git push origin main
