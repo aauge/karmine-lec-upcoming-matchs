@@ -59,55 +59,27 @@ def parse_matches(html: str):
     """
     Parcourt le HTML pour en extraire les matchs.
 
-    NOTE : Liquipedia peut changer la structure de ses templates.
-    Si cette fonction ne trouve plus rien, ouvre la page dans un
-    navigateur, "Inspecter l'élément" sur un match, et ajuste les
-    sélecteurs CSS ci-dessous (cherche des classes contenant "match",
-    "team-template", ou un attribut data-timestamp).
+    Structure Liquipedia (observée en juillet 2026) :
+    - chaque match est contenu dans un <div class="match-info">
+    - l'heure est dans un descendant avec l'attribut data-timestamp
+    - les deux équipes sont dans des <div class="match-info-header-opponent">,
+      le nom complet de l'équipe est dans l'attribut title="" du lien <a>
+      (le texte visible n'est qu'un logo / une abréviation)
+    - le tournoi est identifiable via le lien dans
+      <div class="match-info-tournament">, soit par son texte
+      (class="match-info-tournament-name" si présent), soit par son
+      attribut href (ex: /leagueoflegends/LEC/2026/Summer/...)
+
+    NOTE : si Liquipedia change à nouveau sa structure, il faudra
+    ré-inspecter le HTML réel (voir historique de ce fichier pour
+    un exemple de bloc diagnostic).
     """
     soup = BeautifulSoup(html, "html.parser")
     matches = []
-
-    # --- Mode diagnostic --------------------------------------------
-    # Affiche des infos dans les logs pour comprendre la vraie structure
-    # de la page si le parsing ne trouve rien. À retirer une fois que
-    # tout fonctionne correctement.
-    print("=== DIAGNOSTIC ===", file=sys.stderr)
-    print(f"Taille du HTML récupéré : {len(html)} caractères", file=sys.stderr)
-
-    # Liste les classes uniques contenant "match" ou "team" pour identifier
-    # les vrais noms utilisés par le template actuel de Liquipedia.
-    all_classes = set()
-    for el in soup.find_all(class_=True):
-        classes = el.get("class")
-        if isinstance(classes, list):
-            all_classes.update(classes)
-        elif classes:
-            all_classes.add(classes)
-
-    match_classes = sorted(c for c in all_classes if "match" in c.lower())
-    team_classes = sorted(c for c in all_classes if "team" in c.lower())
-    print(f"Classes contenant 'match' ({len(match_classes)}): {match_classes[:40]}", file=sys.stderr)
-    print(f"Classes contenant 'team' ({len(team_classes)}): {team_classes[:40]}", file=sys.stderr)
-
-    # Regarde la structure complète autour du premier timestamp trouvé
-    first_ts = soup.select_one("[data-timestamp]")
-    if first_ts:
-        print("--- Contexte autour du 1er [data-timestamp] (parent puis grand-parent) ---", file=sys.stderr)
-        parent = first_ts.find_parent()
-        grandparent = parent.find_parent() if parent else None
-        if grandparent:
-            print(str(grandparent)[:3000], file=sys.stderr)
-        elif parent:
-            print(str(parent)[:3000], file=sys.stderr)
-    print("=== FIN DIAGNOSTIC ===", file=sys.stderr)
-    # ------------------------------------------------------------------
-
-    match_blocks = soup.select("[class*='match']")
     seen = set()
 
-    for block in match_blocks:
-        ts_el = block.select_one("[data-timestamp]")
+    for match_el in soup.select("div.match-info"):
+        ts_el = match_el.select_one("[data-timestamp]")
         if not ts_el:
             continue
         try:
@@ -115,17 +87,24 @@ def parse_matches(html: str):
         except (KeyError, ValueError):
             continue
 
-        team_els = block.select("[class*='team-template-text']")
-        team_names = [t.get_text(strip=True) for t in team_els if t.get_text(strip=True)]
-
-        if len(team_names) < 2:
-            continue
-
+        opponent_divs = match_el.select(".match-info-header-opponent")
+        team_names = []
+        for opp in opponent_divs:
+            name_link = opp.select_one("a[title]")
+            team_names.append(name_link["title"].strip() if name_link else "TBD")
+        while len(team_names) < 2:
+            team_names.append("TBD")
         team_a, team_b = team_names[0], team_names[1]
 
-        # Tournoi : cherche un lien/texte proche indiquant la compétition
-        tourney_el = block.find_previous(class_=re.compile("tournament|league|matches-header"))
-        tournament = tourney_el.get_text(strip=True) if tourney_el else ""
+        tournament_name_el = match_el.select_one(".match-info-tournament-name")
+        tournament_link = match_el.select_one(".match-info-tournament a[href]")
+        tournament_href = tournament_link["href"] if tournament_link else ""
+        tournament_title_attr = tournament_link.get("title", "") if tournament_link else ""
+        tournament = (
+            tournament_name_el.get_text(strip=True)
+            if tournament_name_el and tournament_name_el.get_text(strip=True)
+            else (tournament_title_attr or tournament_href)
+        )
 
         key = (timestamp, team_a, team_b)
         if key in seen:
@@ -138,9 +117,11 @@ def parse_matches(html: str):
                 "team_a": team_a,
                 "team_b": team_b,
                 "tournament": tournament,
+                "tournament_href": tournament_href,
             }
         )
 
+    print(f"[diag] {len(matches)} match(s) détecté(s) au total sur la page.", file=sys.stderr)
     return matches
 
 
@@ -149,8 +130,14 @@ def matches_kc(team_a: str, team_b: str) -> bool:
     return any(kw in combined for kw in TEAM_KEYWORDS)
 
 
-def matches_lec(tournament: str) -> bool:
-    return COMPETITION_KEYWORD in tournament.lower()
+def matches_lec(tournament: str, tournament_href: str = "") -> bool:
+    # Le chemin de la page Liquipedia contient l'abréviation du tournoi
+    # (ex: /leagueoflegends/LEC/2026/Summer/...) : c'est plus fiable que
+    # le texte affiché, qui peut être vide (juste une image) sur certains
+    # matchs.
+    if re.search(r"/LEC/", tournament_href):
+        return True
+    return bool(re.search(r"\blec\b", tournament.lower()))
 
 
 def build_calendar(matches) -> Calendar:
@@ -180,7 +167,9 @@ def main():
     all_matches = parse_matches(html)
 
     kc_matches = [
-        m for m in all_matches if matches_kc(m["team_a"], m["team_b"]) and matches_lec(m["tournament"])
+        m
+        for m in all_matches
+        if matches_kc(m["team_a"], m["team_b"]) and matches_lec(m["tournament"], m["tournament_href"])
     ]
 
     if not kc_matches:
