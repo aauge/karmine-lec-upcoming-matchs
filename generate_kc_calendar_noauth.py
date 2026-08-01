@@ -27,9 +27,18 @@ from icalendar import Calendar, Event
 # --- Configuration ------------------------------------------------------
 
 WIKI = "leagueoflegends"
-MATCHES_PAGE = "Liquipedia:Matches"   # page publique listant les prochains matchs
+MATCHES_PAGE = "Liquipedia:Matches"   # page publique listant les prochains matchs (fenêtre glissante, proche uniquement)
+
+# Pages de tournoi à interroger en plus, pour avoir tout le programme de la
+# saison (y compris les matchs plus lointains, playoffs compris) que la page
+# glissante ci-dessus ne montre pas encore.
+# Ajoute ici d'autres splits/pages si besoin (ex: LEC/2026/Winter, playoffs...).
+TOURNAMENT_PAGES = [
+    "LEC/2026/Summer/Regular_Season",
+    "LEC/2026/Summer/Playoffs",
+]
+
 TEAM_KEYWORDS = ["karmine corp", "kc"]     # variantes du nom d'équipe à matcher
-COMPETITION_KEYWORD = "lec"                # filtre approximatif sur le tournoi
 OUTPUT_FILE = "kc_lec.ics"
 
 # ⚠️ Remplace par une adresse à toi : Liquipedia bloque les User-Agent génériques.
@@ -38,11 +47,11 @@ USER_AGENT = "kc-calendar-perso/1.0 (ton.email@example.com)"
 API_URL = f"https://liquipedia.net/{WIKI}/api.php"
 
 
-def fetch_matches_html() -> str:
-    """Récupère le HTML rendu de la page listant les prochains matchs."""
+def fetch_page_html(page: str) -> str:
+    """Récupère le HTML rendu d'une page Liquipedia donnée."""
     params = {
         "action": "parse",
-        "page": MATCHES_PAGE,
+        "page": page,
         "format": "json",
         "prop": "text",
     }
@@ -51,13 +60,18 @@ def fetch_matches_html() -> str:
     resp.raise_for_status()
     data = resp.json()
     if "error" in data:
-        sys.exit(f"Erreur API Liquipedia : {data['error']}")
+        sys.exit(f"Erreur API Liquipedia pour la page '{page}' : {data['error']}")
     return data["parse"]["text"]["*"]
 
 
-def parse_matches(html: str):
+def parse_matches(html: str, known_tournament: str | None = None):
     """
     Parcourt le HTML pour en extraire les matchs.
+
+    Si `known_tournament` est fourni (cas d'une page de tournoi
+    spécifique, ex: "LEC/2026/Summer"), tous les matchs trouvés sont
+    étiquetés avec ce nom directement, sans essayer de le déduire du
+    HTML (plus simple et plus fiable dans ce cas précis).
 
     Structure Liquipedia (observée en juillet 2026) :
     - chaque match est contenu dans un <div class="match-info">
@@ -96,15 +110,19 @@ def parse_matches(html: str):
             team_names.append("TBD")
         team_a, team_b = team_names[0], team_names[1]
 
-        tournament_name_el = match_el.select_one(".match-info-tournament-name")
-        tournament_link = match_el.select_one(".match-info-tournament a[href]")
-        tournament_href = tournament_link["href"] if tournament_link else ""
-        tournament_title_attr = tournament_link.get("title", "") if tournament_link else ""
-        tournament = (
-            tournament_name_el.get_text(strip=True)
-            if tournament_name_el and tournament_name_el.get_text(strip=True)
-            else (tournament_title_attr or tournament_href)
-        )
+        if known_tournament:
+            tournament = known_tournament
+            tournament_href = f"/{WIKI}/{known_tournament.replace(' ', '_')}"
+        else:
+            tournament_name_el = match_el.select_one(".match-info-tournament-name")
+            tournament_link = match_el.select_one(".match-info-tournament a[href]")
+            tournament_href = tournament_link["href"] if tournament_link else ""
+            tournament_title_attr = tournament_link.get("title", "") if tournament_link else ""
+            tournament = (
+                tournament_name_el.get_text(strip=True)
+                if tournament_name_el and tournament_name_el.get_text(strip=True)
+                else (tournament_title_attr or tournament_href)
+            )
 
         key = (timestamp, team_a, team_b)
         if key in seen:
@@ -121,7 +139,8 @@ def parse_matches(html: str):
             }
         )
 
-    print(f"[diag] {len(matches)} match(s) détecté(s) au total sur la page.", file=sys.stderr)
+    label = known_tournament or "page générale"
+    print(f"[diag] {len(matches)} match(s) détecté(s) sur '{label}'.", file=sys.stderr)
     return matches
 
 
@@ -163,21 +182,32 @@ def build_calendar(matches) -> Calendar:
 
 
 def main():
-    html = fetch_matches_html()
-    all_matches = parse_matches(html)
+    all_kc_matches = {}  # clé = (date, team_a, team_b) pour dédoublonner entre sources
 
-    kc_matches = [
-        m
-        for m in all_matches
-        if matches_kc(m["team_a"], m["team_b"]) and matches_lec(m["tournament"], m["tournament_href"])
-    ]
+    # Source 1 : page glissante générale (matchs proches, toutes ligues confondues)
+    html = fetch_page_html(MATCHES_PAGE)
+    general_matches = parse_matches(html)
+    for m in general_matches:
+        if matches_kc(m["team_a"], m["team_b"]) and matches_lec(m["tournament"], m["tournament_href"]):
+            all_kc_matches[(m["date"], m["team_a"], m["team_b"])] = m
+
+    # Source 2 : pages de tournoi spécifiques (programme complet de la saison,
+    # y compris les matchs plus lointains que la page glissante ne montre pas)
+    for page in TOURNAMENT_PAGES:
+        time.sleep(30)  # respecte la limite Liquipedia : 1 requête "parse" / 30s
+        tournament_html = fetch_page_html(page)
+        tournament_matches = parse_matches(tournament_html, known_tournament=page)
+        for m in tournament_matches:
+            if matches_kc(m["team_a"], m["team_b"]):
+                all_kc_matches[(m["date"], m["team_a"], m["team_b"])] = m
+
+    kc_matches = sorted(all_kc_matches.values(), key=lambda m: m["date"])
 
     if not kc_matches:
         print(
             "Aucun match trouvé avec les filtres actuels.\n"
-            f"({len(all_matches)} matchs détectés au total sur la page — "
-            "vérifie les mots-clés TEAM_KEYWORDS / COMPETITION_KEYWORD, "
-            "ou que le parsing HTML fonctionne toujours.)"
+            "Vérifie les mots-clés TEAM_KEYWORDS, ou que le parsing HTML "
+            "fonctionne toujours (voir les lignes [diag] ci-dessus)."
         )
 
     cal = build_calendar(kc_matches)
